@@ -93,7 +93,7 @@ const PixelScaler = () => {
     // --- ATAJOS DE TECLADO ---
     useEffect(() => {
         const handleKeyDown = (e) => {
-            if (activeTab !== 'editor' && activeTab !== 'dims') return; // Permitir en tabs principales si se desea
+            if (activeTab !== 'editor' && activeTab !== 'dims') return;
 
             // Herramientas
             if (e.key.toLowerCase() === 'b') setActiveTool('brush');
@@ -113,7 +113,7 @@ const PixelScaler = () => {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [activeTab, historyIndex, history]); // Dependencias para que undo/redo lean el estado correcto
+    }, [activeTab, historyIndex, history]);
 
     // --- CARGA DE ARCHIVOS ---
     const handleGlobalDrop = (e) => {
@@ -250,9 +250,7 @@ const PixelScaler = () => {
     const saveHistoryStep = (newEdits) => {
         const newHistory = history.slice(0, historyIndex + 1);
         newHistory.push(newEdits);
-        // Limitar historial si es necesario (ej. 50 pasos)
         if (newHistory.length > 50) newHistory.shift();
-
         setHistory(newHistory);
         setHistoryIndex(newHistory.length - 1);
         setManualEdits(newEdits);
@@ -278,19 +276,16 @@ const PixelScaler = () => {
     const handlePointerDown = (e) => {
         if (activeTab !== 'editor' || !originalImage) return;
         setIsPainting(true);
-
-        // Si es ALT, actua como gotero inmediato
         if (e.altKey) {
             pickColorAt(e);
             return;
         }
-
         paintAt(e);
     };
 
     const handlePointerMove = (e) => {
         if (activeTab !== 'editor') return;
-        if (e.altKey && isPainting) return; // No pintar si estamos 'alt-picking'
+        if (e.altKey && isPainting) return;
         if (!isPainting) return;
         paintAt(e);
     };
@@ -298,7 +293,6 @@ const PixelScaler = () => {
     const handlePointerUp = () => {
         if (isPainting) {
             setIsPainting(false);
-            // Guardar estado en historial al terminar el trazo
             saveHistoryStep({ ...manualEdits });
         }
     };
@@ -313,7 +307,6 @@ const PixelScaler = () => {
         const p = ctx.getImageData(x, y, 1, 1).data;
         const hex = rgbToHex(p[0], p[1], p[2]);
         setBrushColor(hex);
-        // Opcional: cambiar a pincel automáticamente
         if (activeTool !== 'brush') setActiveTool('brush');
     };
 
@@ -325,11 +318,10 @@ const PixelScaler = () => {
 
         if (activeTool === 'eyedropper') {
             pickColorAt(e);
-            setIsPainting(false); // Gotero es un click único
+            setIsPainting(false);
             return;
         }
 
-        // Lógica de Pincel/Borrador con Tamaño
         const newEdits = { ...manualEdits };
         const radius = Math.floor(brushSize / 2);
 
@@ -828,6 +820,7 @@ const PixelScaler = () => {
                                         {paletteMode === 'auto' && <div className="mb-4"><div className="flex justify-between text-xs text-slate-400 mb-1"><span>Colores Max</span> <span>{colorCount}</span></div><input type="range" min="2" max="64" value={colorCount} onChange={(e) => setColorCount(Number(e.target.value))} className="w-full accent-pink-500 h-1 bg-slate-700 rounded appearance-none" /></div>}
                                     </div>
 
+                                    {/* Mis Paletas */}
                                     {Object.keys(customPalettes).length > 0 && (
                                         <div>
                                             <label className="text-[10px] font-bold text-slate-500 mb-1 block uppercase tracking-wider">Mis Paletas</label>
@@ -842,10 +835,31 @@ const PixelScaler = () => {
                                         </div>
                                     )}
 
+                                    {/* Presets Retro (RESTAURADO) */}
+                                    <div>
+                                        <label className="text-[10px] font-bold text-slate-500 mb-1 block uppercase tracking-wider">Presets Retro</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {Object.entries(DEFAULT_PRESETS).map(([key, p]) => (
+                                                <button
+                                                    key={key}
+                                                    onClick={() => setPaletteMode(key)}
+                                                    className={`text-[10px] py-2 px-2 rounded border truncate ${paletteMode === key ? 'bg-slate-600 border-white text-white' : 'bg-slate-700 border-transparent text-slate-400 hover:bg-slate-600'}`}
+                                                >
+                                                    {p.name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
                                     <div className="flex gap-1 pt-2 border-t border-slate-700">
                                         <button onClick={saveCurrentPalette} className="flex-1 bg-slate-700 hover:bg-purple-600 text-[10px] text-white py-2 rounded flex flex-col items-center gap-1"><Save size={14} /> Guardar</button>
                                         <button onClick={exportPalette} className="flex-1 bg-slate-700 hover:bg-green-600 text-[10px] text-white py-2 rounded flex flex-col items-center gap-1"><Download size={14} /> Exportar</button>
                                         <label className="flex-1 bg-slate-700 hover:bg-blue-600 text-[10px] text-white py-2 rounded flex flex-col items-center gap-1 cursor-pointer"><FolderOpen size={14} /> Importar<input type="file" accept=".json,.txt,.hex" onChange={importPalette} className="hidden" /></label>
+                                    </div>
+
+                                    <div className="bg-slate-900/50 p-3 rounded border border-slate-700 mt-2">
+                                        <label className="flex items-center justify-between text-xs text-slate-300 cursor-pointer mb-2"><div className="flex items-center gap-2"><ScanLine size={14} /> Dithering</div><input type="checkbox" checked={useDithering} onChange={(e) => setUseDithering(e.target.checked)} className="rounded border-slate-600 bg-slate-800 text-purple-500" /></label>
+                                        {useDithering && <input type="range" min="0.1" max="1" step="0.1" value={ditherStrength} onChange={(e) => setDitherStrength(Number(e.target.value))} className="w-full accent-slate-400 h-1 bg-slate-700 rounded appearance-none" />}
                                     </div>
                                 </div>
                             )}
