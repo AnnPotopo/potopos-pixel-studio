@@ -3,10 +3,11 @@ import {
     Upload, Download, Image as ImageIcon, ZoomIn, ZoomOut, Play,
     Palette, Sparkles, Sun, Sliders, Monitor, PaintBucket,
     ScanLine, ArrowLeftRight, Move, Loader2, Save, FolderOpen, Trash2,
-    BoxSelect, Eye, ListFilter, Pencil, Eraser, Pipette, Plus, MousePointer2
+    BoxSelect, Eye, ListFilter, Pencil, Eraser, Pipette, Plus, MousePointer2,
+    Undo, Redo
 } from 'lucide-react';
 
-// === PRESETS DE PALETA ===
+// === PRESETS DE PALETA (Por Defecto) ===
 const DEFAULT_PRESETS = {
     gb: { name: 'GameBoy', colors: [[15, 56, 15], [48, 98, 48], [139, 172, 15], [155, 188, 15]] },
     nes: { name: 'NES', colors: [[124, 124, 124], [0, 0, 252], [0, 0, 188], [68, 40, 188], [148, 0, 132], [168, 0, 32], [168, 16, 0], [136, 20, 0], [80, 48, 0], [0, 120, 0], [0, 104, 0], [0, 88, 0], [0, 64, 88], [0, 0, 0], [188, 188, 188], [0, 120, 248], [0, 88, 248], [104, 68, 252], [216, 0, 204], [228, 0, 88], [248, 56, 0], [228, 92, 16], [172, 124, 0], [0, 184, 0], [0, 168, 0], [0, 168, 68], [0, 136, 136], [248, 248, 248], [60, 188, 252], [104, 136, 252], [152, 120, 248], [248, 120, 248], [248, 88, 152], [248, 120, 88], [252, 160, 68], [248, 184, 0], [184, 248, 24], [88, 216, 84], [88, 248, 152], [0, 232, 216], [120, 120, 120], [252, 252, 252], [164, 228, 252], [184, 184, 248], [216, 184, 248], [248, 184, 248], [248, 164, 192], [240, 208, 176], [252, 224, 168], [248, 216, 120], [216, 248, 120], [184, 248, 184], [184, 248, 216], [0, 252, 252], [248, 216, 248], [0, 0, 0]] },
@@ -67,11 +68,16 @@ const PixelScaler = () => {
     const [outlineColor, setOutlineColor] = useState('#ffffff');
     const [roughness, setRoughness] = useState(0);
 
-    // === ESTADOS DEL EDITOR MANUAL (NUEVO) ===
-    const [manualEdits, setManualEdits] = useState({}); // Mapa { "x,y": [r,g,b,a] }
+    // === ESTADOS DEL EDITOR MANUAL ===
+    const [manualEdits, setManualEdits] = useState({}); // { "x,y": [r,g,b,a] }
     const [activeTool, setActiveTool] = useState('brush'); // brush, eraser, eyedropper
     const [brushColor, setBrushColor] = useState('#ffffff');
+    const [brushSize, setBrushSize] = useState(1);
     const [isPainting, setIsPainting] = useState(false);
+
+    // Historial Undo/Redo
+    const [history, setHistory] = useState([{}]); // Pila de estados de manualEdits
+    const [historyIndex, setHistoryIndex] = useState(0);
 
     // === ESTADOS INTERNOS ===
     const [imageSize, setImageSize] = useState({ w: 0, h: 0 });
@@ -84,7 +90,32 @@ const PixelScaler = () => {
         localStorage.setItem('pixelForge_customPalettes', JSON.stringify(customPalettes));
     }, [customPalettes]);
 
-    // --- CARGA DE ARCHIVOS (IMAGEN O JSON) ---
+    // --- ATAJOS DE TECLADO ---
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (activeTab !== 'editor' && activeTab !== 'dims') return; // Permitir en tabs principales si se desea
+
+            // Herramientas
+            if (e.key.toLowerCase() === 'b') setActiveTool('brush');
+            if (e.key.toLowerCase() === 'e') setActiveTool('eraser');
+            if (e.key.toLowerCase() === 'i') setActiveTool('eyedropper');
+
+            // Undo / Redo
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+                e.preventDefault();
+                if (e.shiftKey) redo();
+                else undo();
+            }
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+                e.preventDefault();
+                redo();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [activeTab, historyIndex, history]); // Dependencias para que undo/redo lean el estado correcto
+
+    // --- CARGA DE ARCHIVOS ---
     const handleGlobalDrop = (e) => {
         e.preventDefault();
         setIsDragging(false);
@@ -92,10 +123,8 @@ const PixelScaler = () => {
         if (!file) return;
 
         if (file.name.toLowerCase().endsWith('.json')) {
-            // Importar Paleta
             importPalette({ target: { files: [file] } });
         } else if (file.type.startsWith('image/')) {
-            // Cargar Imagen
             processImage(file);
         }
     };
@@ -108,7 +137,12 @@ const PixelScaler = () => {
             img.onload = () => {
                 setImageSize({ w: img.width, h: img.height });
                 setOriginalImage(img);
-                setManualEdits({}); // Reset edits on new image
+
+                // Reset Edits
+                setManualEdits({});
+                setHistory([{}]);
+                setHistoryIndex(0);
+
                 // Reset Adjustments
                 setBrightness(0); setContrast(0); setSaturation(0); setPreNoise(0); setRoughness(0);
                 setChannels({
@@ -143,8 +177,7 @@ const PixelScaler = () => {
             }
             return;
         }
-
-        const newColor = [255, 255, 255]; // Blanco por defecto
+        const newColor = [255, 255, 255];
         const updatedPalette = {
             ...customPalettes[paletteMode],
             colors: [...customPalettes[paletteMode].colors, newColor]
@@ -193,7 +226,6 @@ const PixelScaler = () => {
             const text = ev.target.result;
             const hexRegex = /#([0-9a-fA-F]{3,6})\b/g;
             const matches = [...text.matchAll(hexRegex)];
-
             if (matches.length > 0) {
                 const colors = matches.map(m => {
                     let hex = m[1];
@@ -206,7 +238,6 @@ const PixelScaler = () => {
                     const k = c.join(',');
                     if (!seen.has(k)) { seen.add(k); uniqueColors.push(c); }
                 });
-
                 const id = 'custom_' + Date.now();
                 setCustomPalettes(prev => ({ ...prev, [id]: { name: file.name.split('.')[0], colors: uniqueColors } }));
                 setPaletteMode(id);
@@ -215,57 +246,111 @@ const PixelScaler = () => {
         reader.readAsText(file);
     };
 
+    // --- HISTORIAL (UNDO/REDO) ---
+    const saveHistoryStep = (newEdits) => {
+        const newHistory = history.slice(0, historyIndex + 1);
+        newHistory.push(newEdits);
+        // Limitar historial si es necesario (ej. 50 pasos)
+        if (newHistory.length > 50) newHistory.shift();
+
+        setHistory(newHistory);
+        setHistoryIndex(newHistory.length - 1);
+        setManualEdits(newEdits);
+    };
+
+    const undo = () => {
+        if (historyIndex > 0) {
+            const newIndex = historyIndex - 1;
+            setHistoryIndex(newIndex);
+            setManualEdits(history[newIndex]);
+        }
+    };
+
+    const redo = () => {
+        if (historyIndex < history.length - 1) {
+            const newIndex = historyIndex + 1;
+            setHistoryIndex(newIndex);
+            setManualEdits(history[newIndex]);
+        }
+    };
+
     // --- INTERACCIÓN CON EL CANVAS (PINTAR) ---
     const handlePointerDown = (e) => {
         if (activeTab !== 'editor' || !originalImage) return;
         setIsPainting(true);
+
+        // Si es ALT, actua como gotero inmediato
+        if (e.altKey) {
+            pickColorAt(e);
+            return;
+        }
+
         paintAt(e);
     };
 
     const handlePointerMove = (e) => {
-        if (!isPainting || activeTab !== 'editor') return;
+        if (activeTab !== 'editor') return;
+        if (e.altKey && isPainting) return; // No pintar si estamos 'alt-picking'
+        if (!isPainting) return;
         paintAt(e);
     };
 
     const handlePointerUp = () => {
-        setIsPainting(false);
+        if (isPainting) {
+            setIsPainting(false);
+            // Guardar estado en historial al terminar el trazo
+            saveHistoryStep({ ...manualEdits });
+        }
+    };
+
+    const pickColorAt = (e) => {
+        if (!canvasRef.current) return;
+        const rect = canvasRef.current.getBoundingClientRect();
+        const x = Math.floor((e.clientX - rect.left) / (rect.width / finalSize.w));
+        const y = Math.floor((e.clientY - rect.top) / (rect.height / finalSize.h));
+
+        const ctx = canvasRef.current.getContext('2d');
+        const p = ctx.getImageData(x, y, 1, 1).data;
+        const hex = rgbToHex(p[0], p[1], p[2]);
+        setBrushColor(hex);
+        // Opcional: cambiar a pincel automáticamente
+        if (activeTool !== 'brush') setActiveTool('brush');
     };
 
     const paintAt = (e) => {
         if (!canvasRef.current) return;
-
         const rect = canvasRef.current.getBoundingClientRect();
-        // Calcular coordenadas relativas al canvas visual
-        const x = Math.floor((e.clientX - rect.left) / (rect.width / finalSize.w));
-        const y = Math.floor((e.clientY - rect.top) / (rect.height / finalSize.h));
+        const clickX = Math.floor((e.clientX - rect.left) / (rect.width / finalSize.w));
+        const clickY = Math.floor((e.clientY - rect.top) / (rect.height / finalSize.h));
 
-        if (x >= 0 && x < finalSize.w && y >= 0 && y < finalSize.h) {
-            const key = `${x},${y}`;
+        if (activeTool === 'eyedropper') {
+            pickColorAt(e);
+            setIsPainting(false); // Gotero es un click único
+            return;
+        }
 
-            if (activeTool === 'brush') {
-                const rgb = hexToRgb(brushColor);
-                setManualEdits(prev => ({ ...prev, [key]: [...rgb, 255] }));
-            } else if (activeTool === 'eraser') {
-                // En eraser, eliminamos del mapa de edits para restaurar el pixel generado original
-                // O si queremos borrar a transparente:
-                // setManualEdits(prev => ({ ...prev, [key]: [0,0,0,0] }));
+        // Lógica de Pincel/Borrador con Tamaño
+        const newEdits = { ...manualEdits };
+        const radius = Math.floor(brushSize / 2);
 
-                // Aquí asumo que borrar significa "quitar mi edición manual"
-                const newEdits = { ...manualEdits };
-                delete newEdits[key];
-                setManualEdits(newEdits);
-            } else if (activeTool === 'eyedropper') {
-                // Leer color del canvas
-                const ctx = canvasRef.current.getContext('2d');
-                const p = ctx.getImageData(x, y, 1, 1).data;
-                const hex = rgbToHex(p[0], p[1], p[2]);
-                setBrushColor(hex);
-                setActiveTool('brush'); // Auto switch back to brush
-                setIsPainting(false);
+        for (let ox = -radius; ox <= radius; ox++) {
+            for (let oy = -radius; oy <= radius; oy++) {
+                const x = clickX + ox;
+                const y = clickY + oy;
+
+                if (x >= 0 && x < finalSize.w && y >= 0 && y < finalSize.h) {
+                    const key = `${x},${y}`;
+                    if (activeTool === 'brush') {
+                        const rgb = hexToRgb(brushColor);
+                        newEdits[key] = [...rgb, 255];
+                    } else if (activeTool === 'eraser') {
+                        delete newEdits[key];
+                    }
+                }
             }
         }
+        setManualEdits(newEdits);
     };
-
 
     // --- HELPER FUNCIONES ---
     const rgbToHsl = (r, g, b) => {
@@ -312,7 +397,7 @@ const PixelScaler = () => {
     const rgbToHex = (r, g, b) => "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
     const getDistanceSq = (c1, c2) => (c1[0] - c2[0]) ** 2 + (c1[1] - c2[1]) ** 2 + (c1[2] - c2[2]) ** 2;
 
-    // --- LÓGICA DE PROCESAMIENTO (RENDER PIPELINE) ---
+    // --- RENDER PIPELINE ---
     const applyColorGrading = (ctx, w, h) => {
         const imgData = ctx.getImageData(0, 0, w, h);
         const data = imgData.data;
@@ -322,7 +407,6 @@ const PixelScaler = () => {
         for (let i = 0; i < data.length; i += 4) {
             let r = data[i]; let g = data[i + 1]; let b = data[i + 2];
 
-            // Global
             r += brightness; g += brightness; b += brightness;
             r = contrastFactor * (r - 128) + 128;
             g = contrastFactor * (g - 128) + 128;
@@ -336,7 +420,6 @@ const PixelScaler = () => {
                 b = gray + (b - gray) * satMult;
             }
 
-            // Canales (HSL)
             if (channelsActive) {
                 let [hue, sat, lum] = rgbToHsl(r, g, b);
                 let target = null;
@@ -426,15 +509,12 @@ const PixelScaler = () => {
     };
 
     const applyManualEdits = (imageData) => {
-        // Aplica los pixeles pintados manualmente
         const data = imageData.data;
         const w = imageData.width;
-
         Object.entries(manualEdits).forEach(([key, color]) => {
             const [xStr, yStr] = key.split(',');
             const x = parseInt(xStr);
             const y = parseInt(yStr);
-
             if (x >= 0 && x < w && y >= 0 && y < imageData.height) {
                 const idx = (y * w + x) * 4;
                 data[idx] = color[0];
@@ -505,7 +585,6 @@ const PixelScaler = () => {
 
             let imgData = ctx.getImageData(0, 0, newW, newH);
 
-            // Determinar Paleta
             let activePalette = [];
             if (paletteMode === 'auto') {
                 activePalette = generatePalette(imgData, colorCount);
@@ -519,12 +598,11 @@ const PixelScaler = () => {
             lastCalculatedPaletteRef.current = activePalette;
             setCurrentPaletteDisplay(activePalette);
 
-            // Pipeline
             imgData = applyQuantization(imgData, activePalette);
             if (removeOrphans) imgData = cleanOrphans(imgData);
             if (roughness > 0) imgData = applyRoughness(imgData, roughness);
 
-            // APLICAR EDICIÓN MANUAL (Encima de todo lo generado)
+            // APLICAR EDICIÓN MANUAL
             imgData = applyManualEdits(imgData);
 
             if (addOutline) imgData = generateOutline(imgData, outlineColor);
@@ -558,8 +636,8 @@ const PixelScaler = () => {
                 </div>
             )}
 
-            {/* === COLUMNA IZQUIERDA === */}
-            <div className="lg:col-span-3 bg-slate-800 rounded-xl border border-slate-700 shadow-xl flex flex-col overflow-hidden">
+            {/* === COLUMNA IZQUIERDA (33% Ancho) === */}
+            <div className="lg:col-span-4 bg-slate-800 rounded-xl border border-slate-700 shadow-xl flex flex-col overflow-hidden">
                 <div className="p-4 border-b border-slate-700 bg-slate-900/50">
                     <h2 className="text-sm font-bold text-white flex items-center gap-2">
                         <Sliders size={16} className="text-purple-400" /> Editor
@@ -581,11 +659,11 @@ const PixelScaler = () => {
                         <div className="flex border-b border-slate-700 bg-slate-800 overflow-x-auto">
                             {[
                                 { id: 'dims', icon: Monitor, label: 'Tam' },
-                                { id: 'editor', icon: Pencil, label: 'Pintar' }, // NUEVO TAB
                                 { id: 'color', icon: Sun, label: 'Color' },
                                 { id: 'channels', icon: ListFilter, label: 'Canal' },
                                 { id: 'palette', icon: Palette, label: 'Paleta' },
                                 { id: 'fx', icon: Sparkles, label: 'FX' },
+                                { id: 'editor', icon: Pencil, label: 'Pintar' }, // MOVIDO AL FINAL
                             ].map(tab => (
                                 <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 min-w-[50px] py-3 flex flex-col items-center gap-1 text-[10px] uppercase font-bold transition-colors border-b-2 ${activeTab === tab.id ? 'border-purple-500 text-purple-400 bg-slate-700/50' : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-700/30'}`}>
                                     <tab.icon size={16} /> {tab.label}
@@ -610,12 +688,15 @@ const PixelScaler = () => {
                                 </div>
                             )}
 
-                            {/* NUEVO TAB: EDITOR MANUAL */}
+                            {/* EDITOR MANUAL */}
                             {activeTab === 'editor' && (
                                 <div className="space-y-4 animate-in fade-in slide-in-from-left-2">
                                     <div className="bg-slate-900/50 p-3 rounded border border-slate-700">
-                                        <label className="text-xs font-bold text-slate-400 mb-2 block uppercase">Herramientas</label>
-                                        <div className="flex gap-2">
+                                        <label className="text-xs font-bold text-slate-400 mb-2 block uppercase flex justify-between">
+                                            Herramientas
+                                            <span className="text-[10px] normal-case text-slate-500">Atajos: B, E, Alt+Click</span>
+                                        </label>
+                                        <div className="flex gap-2 mb-3">
                                             <button onClick={() => setActiveTool('brush')} className={`flex-1 p-2 rounded flex flex-col items-center gap-1 ${activeTool === 'brush' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
                                                 <Pencil size={18} /> <span className="text-[10px]">Pincel</span>
                                             </button>
@@ -626,6 +707,18 @@ const PixelScaler = () => {
                                                 <Pipette size={18} /> <span className="text-[10px]">Gotero</span>
                                             </button>
                                         </div>
+
+                                        <label className="text-xs font-bold text-slate-400 mb-1 block">Tamaño: {brushSize}px</label>
+                                        <input type="range" min="1" max="5" value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} className="w-full accent-slate-400 h-1 bg-slate-700 rounded appearance-none" />
+                                    </div>
+
+                                    <div className="bg-slate-900/50 p-3 rounded border border-slate-700">
+                                        <label className="text-xs font-bold text-slate-400 mb-2 block uppercase">Acciones</label>
+                                        <div className="flex gap-2 mb-2">
+                                            <button onClick={undo} disabled={historyIndex <= 0} className="flex-1 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-xs rounded flex items-center justify-center gap-1"><Undo size={12} /> Deshacer</button>
+                                            <button onClick={redo} disabled={historyIndex >= history.length - 1} className="flex-1 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-xs rounded flex items-center justify-center gap-1"><Redo size={12} /> Rehacer</button>
+                                        </div>
+                                        <button onClick={() => { setManualEdits({}); setHistory([{}]); setHistoryIndex(0); }} className="w-full py-1 text-xs bg-red-900/30 text-red-400 hover:bg-red-900/50 rounded border border-red-900/50">Limpiar Todo el Dibujo</button>
                                     </div>
 
                                     <div className="bg-slate-900/50 p-3 rounded border border-slate-700">
@@ -653,10 +746,6 @@ const PixelScaler = () => {
                                                 );
                                             })}
                                         </div>
-                                    </div>
-
-                                    <div className="flex gap-2">
-                                        <button onClick={() => setManualEdits({})} className="w-full py-2 text-xs bg-red-900/30 text-red-400 hover:bg-red-900/50 rounded border border-red-900/50">Limpiar Dibujo</button>
                                     </div>
                                 </div>
                             )}
@@ -758,11 +847,6 @@ const PixelScaler = () => {
                                         <button onClick={exportPalette} className="flex-1 bg-slate-700 hover:bg-green-600 text-[10px] text-white py-2 rounded flex flex-col items-center gap-1"><Download size={14} /> Exportar</button>
                                         <label className="flex-1 bg-slate-700 hover:bg-blue-600 text-[10px] text-white py-2 rounded flex flex-col items-center gap-1 cursor-pointer"><FolderOpen size={14} /> Importar<input type="file" accept=".json,.txt,.hex" onChange={importPalette} className="hidden" /></label>
                                     </div>
-
-                                    <div className="bg-slate-900/50 p-3 rounded border border-slate-700 mt-2">
-                                        <label className="flex items-center justify-between text-xs text-slate-300 cursor-pointer mb-2"><div className="flex items-center gap-2"><ScanLine size={14} /> Dithering</div><input type="checkbox" checked={useDithering} onChange={(e) => setUseDithering(e.target.checked)} className="rounded border-slate-600 bg-slate-800 text-purple-500" /></label>
-                                        {useDithering && <input type="range" min="0.1" max="1" step="0.1" value={ditherStrength} onChange={(e) => setDitherStrength(Number(e.target.value))} className="w-full accent-slate-400 h-1 bg-slate-700 rounded appearance-none" />}
-                                    </div>
                                 </div>
                             )}
 
@@ -793,8 +877,8 @@ const PixelScaler = () => {
                 )}
             </div>
 
-            {/* === COLUMNA DERECHA === */}
-            <div className="lg:col-span-9 bg-slate-900 rounded-xl border border-slate-700 shadow-xl flex flex-col relative overflow-hidden">
+            {/* === COLUMNA DERECHA (66% Ancho) === */}
+            <div className="lg:col-span-8 bg-slate-900 rounded-xl border border-slate-700 shadow-xl flex flex-col relative overflow-hidden">
                 {!originalImage ? (
                     <div className="flex-1 flex flex-col items-center justify-center text-slate-600 gap-2 opacity-50"><ImageIcon size={64} /><p className="font-medium">Esperando imagen...</p></div>
                 ) : (
